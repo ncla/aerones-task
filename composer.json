@@ -6,6 +6,7 @@
     "require": {
         "php": ">=8.2",
         "ext-ctype": "*",
+        "ext-curl": "*",
         "ext-iconv": "*",
         "symfony/console": "7.2.*",
         "symfony/dotenv": "7.2.*",
