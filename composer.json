@@ -8,6 +8,7 @@
         "ext-ctype": "*",
         "ext-curl": "*",
         "ext-iconv": "*",
+        "react/async": "^4.3.0",
         "react/http": "^1.11",
         "react/promise": "^3 || ^2 || ^1",
         "react/promise-stream": "^1.7",
