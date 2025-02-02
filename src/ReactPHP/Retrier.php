@@ -4,24 +4,29 @@ declare(strict_types=1);
 
 namespace App\ReactPHP;
 
+use React\EventLoop\LoopInterface;
 use React\Promise\Promise;
 use React\Promise\PromiseInterface;
-use Throwable;
 
 /**
- * Code taken from: https://github.com/rxak-php/ReactPHP-Retrier
+ * Base retry code taken from: https://github.com/rxak-php/ReactPHP-Retrier
  */
 class Retrier
 {
-    public static function attempt(int $attempts, callable $action): PromiseInterface
+    public static function attempt(
+        LoopInterface $loop,
+        int $attempts,
+        callable $action
+    ): PromiseInterface
     {
-        return new Promise(static function (callable $resolve, callable $reject) use ($attempts, $action) {
+        return new Promise(static function (callable $resolve, callable $reject) use ($loop, $attempts, $action) {
             $exceptions = [];
             $retries = 0;
 
             $executeAction = static function (
                 callable $action
             ) use (
+                $loop,
                 $attempts,
                 &$retries,
                 $resolve,
@@ -32,6 +37,7 @@ class Retrier
                 $action($retries)
                     ->then($resolve)
                     ->catch(static function(\Throwable $e) use (
+                        $loop,
                         $attempts, $action, &$retries, $executeAction, &$exceptions, $reject
                     ) {
                         $exceptions[] = $e;
@@ -43,7 +49,12 @@ class Retrier
                                 exceptions: $exceptions,
                             ));
                         } else {
-                            $executeAction($action);
+                            // TODO: Configurable delay
+                            $delay = 5 * $retries;
+
+                            $loop->addTimer($delay, function() use ($action, $executeAction) {
+                                $executeAction($action);
+                            });
                         }
                     });
             };
@@ -52,8 +63,8 @@ class Retrier
         });
     }
 
-    public function retry(int $attempts, callable $action): PromiseInterface
+    public function retry(LoopInterface $loop, int $attempts, callable $action): PromiseInterface
     {
-        return self::attempt($attempts, $action);
+        return self::attempt($loop, $attempts, $action);
     }
 }

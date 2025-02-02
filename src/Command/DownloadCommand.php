@@ -47,6 +47,7 @@ class DownloadCommand extends Command
         foreach ($urls as $url) {
             $promises[] = $this->settlePromise(
                 Retrier::attempt(
+                    $loop,
                     3,
                     fn () => new Promise(function ($resolve, $reject) use ($url, $loop, $browser) {
                         $this->downloadFile(
