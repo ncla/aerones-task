@@ -31,7 +31,9 @@ class Retrier
             ) {
                 $action($retries)
                     ->then($resolve)
-                    ->catch(static function(\Throwable $e) use ($attempts, $action, &$retries, $executeAction, &$exceptions, $reject) {
+                    ->catch(static function(\Throwable $e) use (
+                        $attempts, $action, &$retries, $executeAction, &$exceptions, $reject
+                    ) {
                         $exceptions[] = $e;
                         $retries++;
 
