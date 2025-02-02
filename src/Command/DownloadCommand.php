@@ -5,10 +5,20 @@ declare(strict_types=1);
 namespace App\Command;
 
 use Exception;
+use Psr\Http\Message\ResponseInterface;
+use React\EventLoop\Loop;
+use React\EventLoop\LoopInterface;
+use React\Http\Browser;
+use React\Promise\Promise;
+use React\Promise\PromiseInterface;
+use React\Stream\ReadableStreamInterface;
+use React\Stream\WritableResourceStream;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
+use React\Promise\Stream;
+use function React\Promise\all;
 
 #[AsCommand(name: 'app:download', description: 'Download all Aerones videos')]
 class DownloadCommand extends Command
@@ -25,68 +35,61 @@ class DownloadCommand extends Command
             'https://storage.googleapis.com/public_test_access_ae/output_60sec.mp4',
         ];
 
-        $this->downloadFile(
-            'https://storage.googleapis.com/public_test_access_ae/output_20sec.mp4',
-            'output_20sec.mp4'
-        );
+        $loop = Loop::get();
+        $browser = new Browser(null, $loop);
+        $browser = $browser->withTimeout(1);
 
-        $output->writeln('All videos downloaded successfully!');
+        $promises = [];
+
+        foreach ($urls as $url) {
+            $promises[] = $this->downloadFile(
+                $browser,
+                $loop,
+                $url,
+                basename($url)
+            );
+        }
+
+        $downloadingProgressMessageLoop = $loop->addPeriodicTimer(1, function () use (&$promises, $output) {
+            $output->writeln('Downloading...');
+        });
+
+        all($promises)->then(function () use ($output, $downloadingProgressMessageLoop, $loop) {
+            $output->writeln('All videos downloaded successfully!');
+            $loop->cancelTimer($downloadingProgressMessageLoop);
+        });
+
+        $loop->run();
 
         return Command::SUCCESS;
     }
 
-    /**
-     * @throws Exception
-     */
-    protected function downloadFile(string $url, string $saveTo, $debug = false)
+    protected function downloadFile(Browser $browser, LoopInterface $loop, string $url, string $saveTo)
     {
-        $existingSize = file_exists($saveTo) ? filesize($saveTo) : 0;
+        $writeableStream = new WritableResourceStream(
+            fopen($saveTo, 'w'),
+            $loop
+        );
 
-        $curlHandle = curl_init();
+        $stream = Stream\unwrapReadable(
+            $browser
+                ->requestStreaming('GET', $url)
+                ->then(function (ResponseInterface $response) {
+                    return $response->getBody();
+                })
+        );
 
-        curl_setopt($curlHandle, CURLOPT_URL, $url);
-
-        // Add Range option only if there's an existing partial file.
-        // TODO: Add a check to see if the server supports range requests. https://curl.se/libcurl/c/CURLOPT_RANGE.html
-        if ($existingSize > 0) {
-            curl_setopt($curlHandle, CURLOPT_RANGE, "{$existingSize}-");
-        }
-
-        $responseHeaders = [];
-
-        if ($debug) {
-            curl_setopt($curlHandle, CURLOPT_HEADERFUNCTION,
-                function ($curl, $header) use (&$responseHeaders) {
-                    $len = strlen($header);
-                    $header = explode(':', $header, 2);
-                    if (count($header) < 2) // ignore invalid headers
-                        return $len;
-
-                    $responseHeaders[strtolower(trim($header[0]))][] = trim($header[1]);
-
-                    return $len;
-                }
-            );
-        }
-
-        curl_setopt($curlHandle, CURLOPT_FILE, fopen($saveTo, 'a')); // open in append mode
-        curl_setopt($curlHandle, CURLOPT_FOLLOWLOCATION, true);
-        curl_setopt($curlHandle, CURLOPT_TIMEOUT, 3);
-
-        if ($debug) {
-            curl_setopt($curlHandle, CURLOPT_VERBOSE, true);
-        }
-
-        curl_exec($curlHandle);
-
-        if ($debug) {
-            print_r($responseHeaders);
-        }
-
-        if (curl_errno($curlHandle)) {
-            throw new Exception('cURL error: ' . curl_error($curlHandle));
-        }
-
-        curl_close($curlHandle);
+        return new Promise(function ($resolve, $reject) use ($stream, $writeableStream, $saveTo) {
+            $stream
+                ->pipe($writeableStream)
+                ->on('close', function () use ($resolve, $saveTo) {
+                    echo "Downloaded $saveTo\n";
+                    $resolve(true);
+                })
+                ->on('error', function (Exception $e) use ($reject) {
+                    echo "Error: " . $e->getMessage() . "\n";
+                    $reject($e);
+                });
+        });
     }
 }
