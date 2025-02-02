@@ -26,17 +26,17 @@ use function React\Async\await;
 #[AsCommand(name: 'app:download', description: 'Download all Aerones videos')]
 class DownloadCommand extends Command
 {
+    const URLS = [
+        'https://storage.googleapis.com/public_test_access_ae/output_20sec.mp4',
+        'https://storage.googleapis.com/public_test_access_ae/output_30sec.mp4',
+        'https://storage.googleapis.com/public_test_access_ae/output_40sec.mp4',
+        'https://storage.googleapis.com/public_test_access_ae/output_50sec.mp4',
+        'https://storage.googleapis.com/public_test_access_ae/output_60secs.mp4',
+    ];
+
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $output->writeln('Starting to download all Aerones videos...');
-
-        $urls = [
-            'https://storage.googleapis.com/public_test_access_ae/output_20sec.mp4',
-            'https://storage.googleapis.com/public_test_access_ae/output_30sec.mp4',
-            'https://storage.googleapis.com/public_test_access_ae/output_40sec.mp4',
-            'https://storage.googleapis.com/public_test_access_ae/output_50sec.mp4',
-            'https://storage.googleapis.com/public_test_access_ae/output_60secs.mp4',
-        ];
 
         $loop = Loop::get();
         $browser = new Browser(null, $loop);
@@ -44,7 +44,7 @@ class DownloadCommand extends Command
 
         $promises = [];
 
-        foreach ($urls as $url) {
+        foreach (self::URLS as $url) {
             $promises[] = $this->settlePromise(
                 Retrier::attempt(
                     $loop,
