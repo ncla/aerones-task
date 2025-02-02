@@ -18,29 +18,32 @@ class Retrier
         return new Promise(static function (callable $resolve, callable $reject) use ($attempts, $action) {
             $exceptions = [];
             $retries = 0;
-            $shouldReject = static function (Throwable $e) use (&$retries, &$exceptions, $attempts) {
-                $exceptions[] = $e;
-                return ++$retries >= $attempts;
-            };
 
             $executeAction = static function (
                 callable $action
             ) use (
+                $attempts,
                 &$retries,
                 $resolve,
-                $shouldReject,
                 $reject,
                 &$executeAction,
                 &$exceptions
             ) {
                 $action($retries)
                     ->then($resolve)
-                    ->catch(static fn(\Throwable $e) => $shouldReject($e)
-                        ? $reject(new TooManyRetriesException(
-                            sprintf('Max attempts of %d reached', $retries),
-                            exceptions: $exceptions,
-                        ))
-                        : $executeAction($action));
+                    ->catch(static function(\Throwable $e) use ($attempts, $action, &$retries, $executeAction, &$exceptions, $reject) {
+                        $exceptions[] = $e;
+                        $retries++;
+
+                        if ($retries >= $attempts) {
+                            $reject(new TooManyRetriesException(
+                                sprintf('Max attempts of %d reached', $retries),
+                                exceptions: $exceptions,
+                            ));
+                        } else {
+                            $executeAction($action);
+                        }
+                    });
             };
 
             $executeAction($action);
