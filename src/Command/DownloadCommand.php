@@ -70,10 +70,10 @@ class DownloadCommand extends Command
                     return await($promise)['state'] === 'rejected';
                 });
 
-                $output->writeln("Downloaded " . count($successfulDownloads) . " files.");
+                $output->writeln("Downloaded " . count($successfulDownloads) . " file(s).");
 
                 if (count($failedDownloads) > 0) {
-                    $output->writeln("Failed to download " . count($failedDownloads) . " files.");
+                    $output->writeln("Failed to download " . count($failedDownloads) . " file(s).");
                 }
 
                 $loop->cancelTimer($downloadingMessageLoop);
