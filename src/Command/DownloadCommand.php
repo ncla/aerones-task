@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Command;
 
+use App\ReactPHP\Retrier;
 use Exception;
 use Psr\Http\Message\ResponseInterface;
 use React\EventLoop\Loop;
@@ -45,11 +46,16 @@ class DownloadCommand extends Command
 
         foreach ($urls as $url) {
             $promises[] = $this->settlePromise(
-                $this->downloadFile(
-                    $browser,
-                    $loop,
-                    $url,
-                    basename($url)
+                Retrier::attempt(
+                    3,
+                    fn () => new Promise(function ($resolve, $reject) use ($url, $loop, $browser) {
+                        $this->downloadFile(
+                            $browser,
+                            $loop,
+                            $url,
+                            basename($url)
+                        )->then($resolve, $reject);
+                    })
                 )
             );
         }
@@ -116,7 +122,7 @@ class DownloadCommand extends Command
                         return $response->getBody();
                     },
                     function (Exception $e) use ($reject) {
-                        echo "Error: " . $e->getMessage() . "\n";
+                        echo "Error 1: " . $e->getMessage() . "\n";
                         return $reject($e);
                     })
             )
@@ -126,7 +132,7 @@ class DownloadCommand extends Command
                 $resolve(true);
             })
             ->on('error', function (Exception $e) use ($reject) {
-                echo "Error: " . $e->getMessage() . "\n";
+                echo "Error 2: " . $e->getMessage() . "\n";
                 $reject($e);
             });
         });
