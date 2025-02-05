@@ -28,7 +28,9 @@ class ConcurrentDownloader
 {
     public function __construct(
         protected LoggerInterface $logger
-    ) {}
+    )
+    {
+    }
 
     public function download(
         LoopInterface   $loop,
@@ -46,11 +48,13 @@ class ConcurrentDownloader
             $promises[] = $this->settlePromise(
                 Retrier::attempt(
                     $loop,
+                    $output,
                     3,
-                    fn () => new Promise(function ($resolve, $reject) use ($bytesDownloaded, $targetDir, $url, $loop, $browser) {
+                    fn() => new Promise(function ($resolve, $reject) use ($output, $bytesDownloaded, $targetDir, $url, $loop, $browser) {
                         $this->downloadFile(
                             $browser,
                             $loop,
+                            $output,
                             $url,
                             $targetDir . basename($url),
                             $bytesDownloaded
@@ -72,14 +76,14 @@ class ConcurrentDownloader
                 );
 
                 /** @var SettledPromiseResult[] $awaitedPromises */
-                /** @var SettledFulfilledPromiseResult[] $successfulDownloads **/
+                /** @var SettledFulfilledPromiseResult[] $successfulDownloads * */
                 $successfulDownloads = array_filter($awaitedPromises,
                     function ($promise) {
                         return $promise->getState() === SettledPromiseResult::STATE_FULFILLED;
                     }
                 );
 
-                /** @var SettledRejectedPromiseResult[] $failedDownloads **/
+                /** @var SettledRejectedPromiseResult[] $failedDownloads * */
                 $failedDownloads = array_filter($awaitedPromises, function ($promise) {
                     return $promise->getState() === SettledPromiseResult::STATE_REJECTED;
                 });
@@ -92,11 +96,12 @@ class ConcurrentDownloader
     }
 
     private function downloadFile(
-        Browser       $browser,
-        LoopInterface $loop,
-        string        $downloadUrl,
-        string        $saveTo,
-        int           $bytesDownloaded = 0
+        Browser         $browser,
+        LoopInterface   $loop,
+        OutputInterface $output,
+        string          $downloadUrl,
+        string          $saveTo,
+        int             $bytesDownloaded = 0
     ): PromiseInterface
     {
         try {
@@ -114,7 +119,7 @@ class ConcurrentDownloader
             $loop
         );
 
-        return new Promise(function ($resolve, $reject) use ($bytesDownloaded, $downloadUrl, $browser, $writeableStream, $saveTo) {
+        return new Promise(function ($resolve, $reject) use ($output, $bytesDownloaded, $downloadUrl, $browser, $writeableStream, $saveTo) {
             return unwrapReadable(
                 $browser
                     ->requestStreaming(
@@ -125,7 +130,8 @@ class ConcurrentDownloader
                         ]
                     )
                     ->then(
-                        function (ResponseInterface $response) {
+                        function (ResponseInterface $response) use ($downloadUrl, $output) {
+                            $output->writeln("URL: " . $downloadUrl . " - HTTP Status code: " . $response->getStatusCode());
                             return $response->getBody();
                         },
                         function (Exception $e) use ($downloadUrl, $saveTo, $bytesDownloaded, $resolve, $reject) {
@@ -151,7 +157,9 @@ class ConcurrentDownloader
                     )
             )
             ->pipe($writeableStream)
-            ->on('close', function () use ($downloadUrl, $resolve, $saveTo) {
+            ->on('close', function () use ($output, $downloadUrl, $resolve, $saveTo) {
+                $output->writeln("Downloaded: " . basename($downloadUrl));
+
                 return $resolve(
                     new DownloadedFile(
                         $downloadUrl,
