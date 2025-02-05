@@ -4,7 +4,11 @@ declare(strict_types=1);
 
 namespace App\Command;
 
+use App\DataObject\DownloadedFile;
 use App\ReactPHP\Retrier;
+use App\ReactPHP\SettledFulfilledPromiseResult;
+use App\ReactPHP\SettledPromiseResult;
+use App\ReactPHP\SettledRejectedPromiseResult;
 use Exception;
 use Psr\Http\Message\ResponseInterface;
 use React\EventLoop\Loop;
@@ -20,7 +24,6 @@ use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
-use Symfony\Component\Filesystem\Exception\IOExceptionInterface;
 use Symfony\Component\Filesystem\Filesystem;
 use Symfony\Component\Filesystem\Path;
 use function React\Async\await;
@@ -68,7 +71,6 @@ class DownloadCommand extends Command
         foreach (self::URLS as $url) {
             $bytesDownloaded = $this->getExistingBytesDownloadedAmount($tempDownloadBaseDir . basename($url));
 
-            // TODO: Add logic for checking existing files, determine if we need to use append mode and pass Range header
             $promises[] = $this->settlePromise(
                 Retrier::attempt(
                     $loop,
@@ -97,21 +99,24 @@ class DownloadCommand extends Command
         // where we resolve even if promise rejects. See settlePromise() wrapper method.
         all($promises)
             ->then(function () use ($promises, $output, $downloadingMessageLoop, $loop, &$successfulDownloads, &$failedDownloads) {
-                $promises = array_map(
+                $awaitedPromises = array_map(
                     function ($promise) {
                         return await($promise);
                     },
                     $promises
                 );
 
-                $successfulDownloads = array_filter($promises,
+                /** @var SettledPromiseResult[] $awaitedPromises */
+                /** @var SettledFulfilledPromiseResult[] $successfulDownloads **/
+                $successfulDownloads = array_filter($awaitedPromises,
                     function ($promise) {
-                        return $promise['state'] === 'fulfilled';
+                        return $promise->getState() === SettledPromiseResult::STATE_FULFILLED;
                     }
                 );
 
-                $failedDownloads = array_filter($promises, function ($promise) {
-                    return $promise['state'] === 'rejected';
+                /** @var SettledRejectedPromiseResult[] $failedDownloads **/
+                $failedDownloads = array_filter($awaitedPromises, function ($promise) {
+                    return $promise->getState() === SettledPromiseResult::STATE_REJECTED;
                 });
 
                 $output->writeln("Downloaded " . count($successfulDownloads) . " file(s).");
@@ -127,7 +132,7 @@ class DownloadCommand extends Command
 
         $this->moveFilePathsToDestinationDirectory(
             array_map(
-                fn ($successfulDownloadPromise) => $successfulDownloadPromise['value']['filepath'],
+                fn ($successfulDownloadPromise) => $successfulDownloadPromise->getValue()->getPath(),
                 $successfulDownloads
             ),
             $this->destinationDirectory
@@ -136,14 +141,18 @@ class DownloadCommand extends Command
         return Command::SUCCESS;
     }
 
+    /**
+     * @param PromiseInterface $promise
+     * @return PromiseInterface<SettledFulfilledPromiseResult|SettledRejectedPromiseResult>
+     */
     protected function settlePromise(PromiseInterface $promise): PromiseInterface
     {
         return $promise->then(
             function ($value) {
-                return ['state' => 'fulfilled', 'value' => $value];
+                return new SettledFulfilledPromiseResult($value);
             },
             function ($reason) {
-                return ['state' => 'rejected', 'reason' => $reason];
+                return new SettledRejectedPromiseResult($reason);
             }
         );
     }
@@ -183,16 +192,20 @@ class DownloadCommand extends Command
                     ->then(function (ResponseInterface $response) {
                         return $response->getBody();
                     },
-                    function (Exception $e) use ($saveTo, $bytesDownloaded, $resolve, $reject) {
+                    function (Exception $e) use ($downloadUrl, $saveTo, $bytesDownloaded, $resolve, $reject) {
                         // Most likely means we already have the full file downloaded
                         if (
                             $e instanceof ResponseException &&
                             $e->getCode() === 416 &&
                             $bytesDownloaded > 0
                         ) {
-                            return $resolve([
-                                'filepath' => $saveTo
-                            ]);
+                            return $resolve(
+                                new DownloadedFile(
+                                    $downloadUrl,
+                                    basename($saveTo),
+                                    $saveTo
+                                )
+                            );
                         }
 
                         echo "Error 1: " . $e->getMessage() . "\n";
@@ -201,12 +214,16 @@ class DownloadCommand extends Command
                     })
             )
             ->pipe($writeableStream)
-            ->on('close', function () use ($resolve, $saveTo) {
+            ->on('close', function () use ($downloadUrl, $resolve, $saveTo) {
                 echo "Downloaded $saveTo\n";
 
-                return $resolve([
-                    'filepath' => $saveTo
-                ]);
+                return $resolve(
+                    new DownloadedFile(
+                        $downloadUrl,
+                        basename($saveTo),
+                        $saveTo
+                    )
+                );
             })
             ->on('error', function (Exception $e) use ($reject) {
                 echo "Error 2: " . $e->getMessage() . "\n";
