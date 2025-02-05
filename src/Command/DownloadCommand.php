@@ -4,22 +4,11 @@ declare(strict_types=1);
 
 namespace App\Command;
 
-use App\DataObject\DownloadedFile;
-use App\ReactPHP\Retrier;
-use App\ReactPHP\SettledFulfilledPromiseResult;
-use App\ReactPHP\SettledPromiseResult;
-use App\ReactPHP\SettledRejectedPromiseResult;
-use Exception;
-use Psr\Http\Message\ResponseInterface;
+use App\ConcurrentDownloader;
+use App\DataObject\DownloadsResult;
 use Psr\Log\LoggerInterface;
 use React\EventLoop\Loop;
-use React\EventLoop\LoopInterface;
 use React\Http\Browser;
-use React\Http\Message\ResponseException;
-use React\Promise\Promise;
-use React\Promise\PromiseInterface;
-use React\Promise\Stream;
-use React\Stream\WritableResourceStream;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
@@ -27,9 +16,7 @@ use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\Filesystem\Filesystem;
 use Symfony\Component\Filesystem\Path;
-use function React\Async\await;
-use function React\Promise\all;
-use function React\Promise\reject;
+
 #[AsCommand(name: 'app:download', description: 'Download all Aerones videos')]
 class DownloadCommand extends Command
 {
@@ -38,14 +25,14 @@ class DownloadCommand extends Command
         'https://storage.googleapis.com/public_test_access_ae/output_30sec.mp4',
         'https://storage.googleapis.com/public_test_access_ae/output_40sec.mp4',
         'https://storage.googleapis.com/public_test_access_ae/output_50sec.mp4',
-        'https://storage.googleapis.com/public_test_access_ae/output_60secs.mp4',
+        'https://storage.googleapis.com/public_test_access_ae/output_60sec.mp4',
     ];
 
     public function __construct(
         protected LoggerInterface $logger,
         #[Autowire('%kernel.project_dir%/var/storage/')]
-        protected $destinationDirectory,
-        ?string $name = null,
+        protected                 $destinationDir,
+        ?string                   $name = null,
     )
     {
         parent::__construct($name);
@@ -56,70 +43,37 @@ class DownloadCommand extends Command
         OutputInterface $output,
     ): int
     {
-        $output->writeln('Starting to download all Aerones videos...');
-
         $loop = Loop::get();
         $browser = new Browser(null, $loop);
-        // TODO: only affects the establishing HTTP request connection? does not take transfer duration into account.
-        $browser = $browser->withTimeout(1);
-
-        $promises = [];
-
+        $downloader = new ConcurrentDownloader($this->logger);
         $tempDownloadBaseDir = sys_get_temp_dir() . '/aerones/';
 
-        $this->ensureDirectoryExistance($tempDownloadBaseDir);
-        $this->ensureDirectoryExistance($this->destinationDirectory);
+        $output->writeln('Starting to download all Aerones videos...');
 
-        foreach (self::URLS as $url) {
-            $bytesDownloaded = $this->getExistingBytesDownloadedAmount($tempDownloadBaseDir . basename($url));
+        $output->writeln('Temporarily downloading to: ' . $tempDownloadBaseDir);
+        $output->writeln('Final destination: ' . $this->destinationDir);
 
-            $promises[] = $this->settlePromise(
-                Retrier::attempt(
-                    $loop,
-                    3,
-                    fn () => new Promise(function ($resolve, $reject) use ($bytesDownloaded, $tempDownloadBaseDir, $url, $loop, $browser) {
-                        $this->downloadFile(
-                            $browser,
-                            $loop,
-                            $url,
-                            $tempDownloadBaseDir . basename($url),
-                            $bytesDownloaded
-                        )->then($resolve, $reject);
-                    })
-                )
-            );
-        }
+        $this->ensureDirectoryExistence($tempDownloadBaseDir);
+        $this->ensureDirectoryExistence($this->destinationDir);
 
-        $downloadingMessageLoop = $loop->addPeriodicTimer(1, function () use (&$promises, $output) {
-            $output->writeln('Downloading...');
+        $downloadingMessageLoop = $loop->addPeriodicTimer(1, function () use ($output) {
+            $output->writeln('Downloading..');
         });
 
-        $successfulDownloads = [];
-        $failedDownloads = [];
+        $downloader->download(
+            $loop,
+            $output,
+            $browser,
+            self::URLS,
+            $tempDownloadBaseDir,
+        )->then(
+            function (DownloadsResult $result) use ($loop, $output, $downloadingMessageLoop) {
+                $output->writeln('Finished processing all downloads!');
 
-        // If one promise rejects, the all()->then() will not call, thus we need equivalent to allSettled from JS,
-        // where we resolve even if promise rejects. See settlePromise() wrapper method.
-        all($promises)
-            ->then(function () use ($promises, $output, $downloadingMessageLoop, $loop, &$successfulDownloads, &$failedDownloads) {
-                $awaitedPromises = array_map(
-                    function ($promise) {
-                        return await($promise);
-                    },
-                    $promises
-                );
+                $loop->cancelTimer($downloadingMessageLoop);
 
-                /** @var SettledPromiseResult[] $awaitedPromises */
-                /** @var SettledFulfilledPromiseResult[] $successfulDownloads **/
-                $successfulDownloads = array_filter($awaitedPromises,
-                    function ($promise) {
-                        return $promise->getState() === SettledPromiseResult::STATE_FULFILLED;
-                    }
-                );
-
-                /** @var SettledRejectedPromiseResult[] $failedDownloads **/
-                $failedDownloads = array_filter($awaitedPromises, function ($promise) {
-                    return $promise->getState() === SettledPromiseResult::STATE_REJECTED;
-                });
+                $successfulDownloads = $result->getSuccessfulDownloads();
+                $failedDownloads = $result->getFailedDownloads();
 
                 $output->writeln("Downloaded " . count($successfulDownloads) . " file(s).");
 
@@ -127,126 +81,22 @@ class DownloadCommand extends Command
                     $output->writeln("Failed to download " . count($failedDownloads) . " file(s).");
                 }
 
-                $loop->cancelTimer($downloadingMessageLoop);
-            });
+                $this->moveFilePathsToDestinationDirectory(
+                    array_map(
+                        fn ($successfulDownloadPromise) => $successfulDownloadPromise->getValue()->getPath(),
+                        $successfulDownloads
+                    ),
+                    $this->destinationDir
+                );
+            },
+        );
 
         $loop->run();
-
-        $this->moveFilePathsToDestinationDirectory(
-            array_map(
-                fn ($successfulDownloadPromise) => $successfulDownloadPromise->getValue()->getPath(),
-                $successfulDownloads
-            ),
-            $this->destinationDirectory
-        );
 
         return Command::SUCCESS;
     }
 
-    /**
-     * @param PromiseInterface $promise
-     * @return PromiseInterface<SettledFulfilledPromiseResult|SettledRejectedPromiseResult>
-     */
-    protected function settlePromise(PromiseInterface $promise): PromiseInterface
-    {
-        return $promise->then(
-            function ($value) {
-                return new SettledFulfilledPromiseResult($value);
-            },
-            function ($reason) {
-                return new SettledRejectedPromiseResult($reason);
-            }
-        );
-    }
-
-    protected function downloadFile(
-        Browser       $browser,
-        LoopInterface $loop,
-        string        $downloadUrl,
-        string        $saveTo,
-        int           $bytesDownloaded = 0
-    ): PromiseInterface
-    {
-        try {
-            $filePointer = fopen(
-                $saveTo,
-                $bytesDownloaded === 0 ? 'w' : 'a'
-            );
-        } catch (Exception $e) {
-            $this->logger->error($e);
-            return reject($e);
-        }
-
-        $writeableStream = new WritableResourceStream(
-            $filePointer,
-            $loop
-        );
-
-        return new Promise(function ($resolve, $reject) use ($bytesDownloaded, $downloadUrl, $browser, $writeableStream, $saveTo) {
-            return Stream\unwrapReadable(
-                $browser
-                    ->requestStreaming(
-                        'GET',
-                        $downloadUrl,
-                        [
-                            'Range' => "bytes=$bytesDownloaded-",
-                        ]
-                    )
-                    ->then(
-                        function (ResponseInterface $response) {
-                            return $response->getBody();
-                        },
-                        function (Exception $e) use ($downloadUrl, $saveTo, $bytesDownloaded, $resolve, $reject) {
-                            // Most likely means we already have the full file downloaded
-                            if (
-                                $e instanceof ResponseException &&
-                                $e->getCode() === 416 &&
-                                $bytesDownloaded > 0
-                            ) {
-                                return $resolve(
-                                    new DownloadedFile(
-                                        $downloadUrl,
-                                        basename($saveTo),
-                                        $saveTo
-                                    )
-                                );
-                            }
-
-                            $this->logger->error($e);
-
-                            return $reject($e);
-                        }
-                    )
-            )
-            ->pipe($writeableStream)
-            ->on('close', function () use ($downloadUrl, $resolve, $saveTo) {
-                return $resolve(
-                    new DownloadedFile(
-                        $downloadUrl,
-                        basename($saveTo),
-                        $saveTo
-                    )
-                );
-            })
-            ->on('error', function (Exception $e) use ($reject) {
-                $this->logger->error($e);
-                $reject($e);
-            });
-        });
-    }
-
-    protected function getExistingBytesDownloadedAmount(string $filePath): int
-    {
-        $filesystem = new Filesystem();
-
-        if ($filesystem->exists($filePath)) {
-            return filesize($filePath);
-        }
-
-        return 0;
-    }
-
-    protected function ensureDirectoryExistance(string $directoryPath): void
+    private function ensureDirectoryExistence(string $directoryPath): void
     {
         $filesystem = new Filesystem();
 
@@ -257,9 +107,10 @@ class DownloadCommand extends Command
 
     /**
      * @param string[] $filePaths
+     * @param string $destinationDir
      * @return void
      */
-    public function moveFilePathsToDestinationDirectory(array $filePaths, string $destinationDir): void
+    private function moveFilePathsToDestinationDirectory(array $filePaths, string $destinationDir): void
     {
         $filesystem = new Filesystem();
 
