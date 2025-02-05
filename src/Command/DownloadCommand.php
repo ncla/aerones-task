@@ -11,6 +11,7 @@ use App\ReactPHP\SettledPromiseResult;
 use App\ReactPHP\SettledRejectedPromiseResult;
 use Exception;
 use Psr\Http\Message\ResponseInterface;
+use Psr\Log\LoggerInterface;
 use React\EventLoop\Loop;
 use React\EventLoop\LoopInterface;
 use React\Http\Browser;
@@ -41,8 +42,9 @@ class DownloadCommand extends Command
     ];
 
     public function __construct(
+        protected LoggerInterface $logger,
         #[Autowire('%kernel.project_dir%/var/storage/')]
-        private $destinationDirectory,
+        protected $destinationDirectory,
         ?string $name = null,
     )
     {
@@ -171,6 +173,7 @@ class DownloadCommand extends Command
                 $bytesDownloaded === 0 ? 'w' : 'a'
             );
         } catch (Exception $e) {
+            $this->logger->error($e);
             return reject($e);
         }
 
@@ -189,34 +192,34 @@ class DownloadCommand extends Command
                             'Range' => "bytes=$bytesDownloaded-",
                         ]
                     )
-                    ->then(function (ResponseInterface $response) {
-                        return $response->getBody();
-                    },
-                    function (Exception $e) use ($downloadUrl, $saveTo, $bytesDownloaded, $resolve, $reject) {
-                        // Most likely means we already have the full file downloaded
-                        if (
-                            $e instanceof ResponseException &&
-                            $e->getCode() === 416 &&
-                            $bytesDownloaded > 0
-                        ) {
-                            return $resolve(
-                                new DownloadedFile(
-                                    $downloadUrl,
-                                    basename($saveTo),
-                                    $saveTo
-                                )
-                            );
+                    ->then(
+                        function (ResponseInterface $response) {
+                            return $response->getBody();
+                        },
+                        function (Exception $e) use ($downloadUrl, $saveTo, $bytesDownloaded, $resolve, $reject) {
+                            // Most likely means we already have the full file downloaded
+                            if (
+                                $e instanceof ResponseException &&
+                                $e->getCode() === 416 &&
+                                $bytesDownloaded > 0
+                            ) {
+                                return $resolve(
+                                    new DownloadedFile(
+                                        $downloadUrl,
+                                        basename($saveTo),
+                                        $saveTo
+                                    )
+                                );
+                            }
+
+                            $this->logger->error($e);
+
+                            return $reject($e);
                         }
-
-                        echo "Error 1: " . $e->getMessage() . "\n";
-
-                        return $reject($e);
-                    })
+                    )
             )
             ->pipe($writeableStream)
             ->on('close', function () use ($downloadUrl, $resolve, $saveTo) {
-                echo "Downloaded $saveTo\n";
-
                 return $resolve(
                     new DownloadedFile(
                         $downloadUrl,
@@ -226,7 +229,7 @@ class DownloadCommand extends Command
                 );
             })
             ->on('error', function (Exception $e) use ($reject) {
-                echo "Error 2: " . $e->getMessage() . "\n";
+                $this->logger->error($e);
                 $reject($e);
             });
         });
