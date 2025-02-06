@@ -52,12 +52,12 @@ class ConcurrentDownloader
                     3,
                     fn() => new Promise(function ($resolve, $reject) use ($output, $bytesDownloaded, $targetDir, $url, $loop, $browser) {
                         $this->downloadFile(
-                            $browser,
-                            $loop,
-                            $output,
-                            $url,
-                            $targetDir . basename($url),
-                            $bytesDownloaded
+                            browser: $browser,
+                            loop: $loop,
+                            output: $output,
+                            downloadUrl: $url,
+                            saveTo: $targetDir . basename($url),
+                            bytesDownloaded: $bytesDownloaded
                         )->then($resolve, $reject);
                     })
                 )

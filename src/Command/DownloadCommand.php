@@ -61,11 +61,11 @@ class DownloadCommand extends Command
         });
 
         $downloader->download(
-            $loop,
-            $output,
-            $browser,
-            self::URLS,
-            $tempDownloadBaseDir,
+            loop: $loop,
+            output: $output,
+            browser: $browser,
+            downloadUrls: self::URLS,
+            targetDir: $tempDownloadBaseDir,
         )->then(
             function (DownloadsResult $result) use ($loop, $output, $downloadingMessageLoop) {
                 $output->writeln('Finished processing all downloads!');
